@@ -11,11 +11,24 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from .client import MOOClient, MOOError
+from .client import MOOClient, MOOError, Observations
 from .config import Config
 
 
 logger = logging.getLogger("moo_mcp")
+
+
+OBSERVATION_HEADER = "--- since last call ---"
+
+
+def _format_observations(obs: Observations) -> str:
+    if not obs.lines and obs.dropped == 0:
+        return ""
+    parts = [OBSERVATION_HEADER]
+    if obs.dropped:
+        parts.append(f"[{obs.dropped} earlier line(s) dropped — buffer cap reached]")
+    parts.extend(obs.lines)
+    return "\n".join(parts)
 
 
 READ_TOOLS: list[Tool] = [
@@ -121,6 +134,19 @@ READ_TOOLS: list[Tool] = [
             "additionalProperties": False,
         },
     ),
+    Tool(
+        name="moo_poll",
+        description=(
+            "Return any pending ambient messages received since the last "
+            "tool call (room chatter, pages, system notifications) without "
+            "sending a command. Empty if nothing new."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    ),
 ]
 
 
@@ -169,6 +195,10 @@ def build_server(config: Config) -> Server:
 
     @server.call_tool()
     async def _call_tool(name: str, arguments: dict) -> list[TextContent]:
+        if name == "moo_poll":
+            await client.ensure_connected()
+            obs_text = _format_observations(client.drain_observations())
+            return [TextContent(type="text", text=obs_text or "(no pending observations)")]
         try:
             text = await _dispatch(client, config, name, arguments)
         except MOOError as exc:
@@ -176,7 +206,11 @@ def build_server(config: Config) -> Server:
         except Exception as exc:  # noqa: BLE001
             logger.exception("tool %s failed", name)
             return [TextContent(type="text", text=f"error: {exc}")]
-        return [TextContent(type="text", text=text or "(no output)")]
+        text = text or "(no output)"
+        obs_text = _format_observations(client.drain_observations())
+        if obs_text:
+            text = f"{text}\n\n{obs_text}"
+        return [TextContent(type="text", text=text)]
 
     return server
 

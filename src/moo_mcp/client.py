@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+from collections import deque
+from dataclasses import dataclass
 
 import telnetlib3
 
@@ -10,6 +12,9 @@ from .config import Config
 
 
 logger = logging.getLogger(__name__)
+
+
+OBSERVATION_CAP = 1000
 
 
 class MOOError(Exception):
@@ -26,22 +31,45 @@ LOGIN_FAILURE_MARKERS = (
 )
 
 
-class MOOClient:
-    """Persistent telnet connection to a LambdaMOO server.
+@dataclass
+class Observations:
+    lines: list[str]
+    dropped: int
 
-    Frames each command/response with a sentinel emitted via the MOO
-    builtin notify(), which is available without requiring a particular
-    core's $player_class:tell. Requires the programmer bit so `;` eval
-    works.
+
+class MOOClient:
+    """Persistent telnet connection with continuous reader.
+
+    A background task reads the stream line-by-line and routes each line to
+    one of two sinks based on state:
+
+      - In-flight command: lines accumulate in a buffer until the command's
+        sentinel is seen, at which point the buffered text resolves the
+        awaiting future. The single `=> N` echo from our own sentinel-eval
+        is then discarded.
+      - Idle: lines accumulate in a capped deque of observations, which can
+        be drained by `drain_observations()`.
+
+    Requires the programmer bit so `;` eval works for the sentinel.
     """
 
     def __init__(self, config: Config):
         self.config = config
         self.reader: telnetlib3.TelnetReader | None = None
         self.writer: telnetlib3.TelnetWriter | None = None
+
         self._cmd_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._connected = False
+
+        self._reader_task: asyncio.Task | None = None
+        self._observations: deque[str] = deque()
+        self._dropped = 0
+
+        self._command_sentinel: str | None = None
+        self._command_buffer: list[str] = []
+        self._command_future: asyncio.Future[str] | None = None
+        self._expect_echo = False
 
     async def ensure_connected(self) -> None:
         if self._connected:
@@ -65,80 +93,127 @@ class MOOClient:
             timeout=cfg.connect_timeout,
         )
 
-        # Drain welcome banner.
-        await self._drain_idle(0.5)
+        self._observations.clear()
+        self._dropped = 0
+        self._reader_task = asyncio.create_task(
+            self._reader_loop(), name="moo-reader"
+        )
 
         if cfg.connect_command:
             line = cfg.connect_command.format(user=cfg.user, password=cfg.password)
         else:
             line = f"connect {cfg.user} {cfg.password}"
-        self._send(line)
 
         nonce = secrets.token_hex(6)
         sentinel = f"##MOO_MCP_LOGIN_{nonce}##"
+        future = self._begin_command(sentinel)
+
+        self._send(line)
         self._send(f'; notify(player, "{sentinel}")')
         await self.writer.drain()
 
         try:
-            pre = await asyncio.wait_for(
-                self._read_until(sentinel),
-                timeout=cfg.connect_timeout,
-            )
+            pre = await asyncio.wait_for(future, timeout=cfg.connect_timeout)
         except asyncio.TimeoutError as exc:
+            self._abort_command()
             raise MOOError(
-                "login: sentinel not seen — check credentials, host/port, and "
-                "that the character has the programmer bit"
+                "login: sentinel not seen — check credentials, host/port, "
+                "and that the character has the programmer bit"
             ) from exc
-        except MOOError as exc:
-            raise MOOError(f"login: connection closed before sentinel: {exc}") from exc
 
         lower = pre.lower()
         for bad in LOGIN_FAILURE_MARKERS:
             if bad in lower:
                 raise MOOError(f"login failed: {pre.strip()[:400]}")
 
-        await self._drain_idle(0.2)
+        # Surface the welcome banner / login output as observations so the
+        # caller can see where they landed.
+        for ln in pre.splitlines():
+            self._add_observation(ln)
         logger.info("logged in as %s", cfg.user)
+
+    async def _reader_loop(self) -> None:
+        assert self.reader is not None
+        buf = ""
+        try:
+            while True:
+                chunk = await self.reader.read(4096)
+                if not chunk:
+                    raise MOOError("connection closed")
+                buf += chunk
+                while True:
+                    nl = buf.find("\n")
+                    if nl == -1:
+                        break
+                    line = buf[:nl]
+                    if line.endswith("\r"):
+                        line = line[:-1]
+                    buf = buf[nl + 1 :]
+                    self._on_line(line)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("reader exiting: %s", exc)
+            self._handle_disconnect(exc)
+
+    def _on_line(self, line: str) -> None:
+        if self._command_sentinel and self._command_sentinel in line:
+            full = "".join(self._command_buffer)
+            self._command_buffer.clear()
+            self._command_sentinel = None
+            self._expect_echo = True
+            future = self._command_future
+            self._command_future = None
+            if future is not None and not future.done():
+                future.set_result(full)
+            return
+        if self._command_sentinel is not None:
+            self._command_buffer.append(line + "\n")
+            return
+        if self._expect_echo:
+            self._expect_echo = False
+            if line.startswith("=> "):
+                return
+            # Not the echo we were expecting; treat as observation.
+        self._add_observation(line)
+
+    def _add_observation(self, line: str) -> None:
+        self._observations.append(line)
+        while len(self._observations) > OBSERVATION_CAP:
+            self._observations.popleft()
+            self._dropped += 1
+
+    def _handle_disconnect(self, exc: BaseException) -> None:
+        self._connected = False
+        if self._command_future is not None and not self._command_future.done():
+            self._command_future.set_exception(MOOError(f"disconnected: {exc}"))
+        self._command_future = None
+        self._command_sentinel = None
+        self._command_buffer.clear()
+        self._expect_echo = False
+
+    def _begin_command(self, sentinel: str) -> asyncio.Future[str]:
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        self._command_buffer.clear()
+        self._command_sentinel = sentinel
+        self._command_future = future
+        self._expect_echo = False
+        return future
+
+    def _abort_command(self) -> None:
+        self._command_sentinel = None
+        self._command_buffer.clear()
+        if self._command_future is not None and not self._command_future.done():
+            self._command_future.cancel()
+        self._command_future = None
+        self._expect_echo = False
 
     def _send(self, line: str) -> None:
         assert self.writer is not None
         self.writer.write(line + "\n")
 
-    async def _drain_idle(self, idle_seconds: float) -> str:
-        assert self.reader is not None
-        buf: list[str] = []
-        while True:
-            try:
-                chunk = await asyncio.wait_for(
-                    self.reader.read(4096), timeout=idle_seconds
-                )
-            except asyncio.TimeoutError:
-                break
-            if not chunk:
-                break
-            buf.append(chunk)
-        return "".join(buf)
-
-    async def _read_until(self, marker: str) -> str:
-        """Read until the marker substring appears.
-
-        Returns text strictly before the line that contains the marker.
-        Raises MOOError if the connection closes first.
-        """
-        assert self.reader is not None
-        buf = ""
-        while True:
-            chunk = await self.reader.read(4096)
-            if not chunk:
-                raise MOOError("connection closed")
-            buf += chunk
-            idx = buf.find(marker)
-            if idx != -1:
-                line_start = buf.rfind("\n", 0, idx) + 1
-                return buf[:line_start]
-
     async def run(self, command: str) -> str:
-        """Send a single command line, return the captured output."""
         if "\n" in command or "\r" in command:
             raise MOOError("command must not contain newlines")
         await self.ensure_connected()
@@ -146,8 +221,9 @@ class MOOClient:
             try:
                 return await self._run_locked(command)
             except MOOError:
-                # Force a reconnect on the next call.
                 self._connected = False
+                if self._reader_task is not None:
+                    self._reader_task.cancel()
                 if self.writer is not None:
                     try:
                         self.writer.close()
@@ -161,23 +237,33 @@ class MOOClient:
         nonce = secrets.token_hex(6)
         sentinel = f"##MOO_MCP_END_{nonce}##"
 
+        future = self._begin_command(sentinel)
+
         self._send(command)
         self._send(f'; notify(player, "{sentinel}")')
         await self.writer.drain()
 
         try:
-            pre = await asyncio.wait_for(
-                self._read_until(sentinel),
-                timeout=cfg.command_timeout,
-            )
+            return await asyncio.wait_for(future, timeout=cfg.command_timeout)
         except asyncio.TimeoutError as exc:
+            self._abort_command()
             raise MOOError(f"command timed out: {command!r}") from exc
 
-        # Drain the trailing "=> 0" from our own sentinel-eval.
-        await self._drain_idle(0.15)
-        return pre
+    def drain_observations(self) -> Observations:
+        lines = list(self._observations)
+        dropped = self._dropped
+        self._observations.clear()
+        self._dropped = 0
+        return Observations(lines=lines, dropped=dropped)
 
     async def close(self) -> None:
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._reader_task = None
         if self.writer is not None:
             try:
                 self._send("@quit")

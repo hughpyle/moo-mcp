@@ -63,6 +63,7 @@ Read-only:
 | `moo_get_property` | `; <object>.<property>` |
 | `moo_parent` | `; parent(<object>)` |
 | `moo_children` | `; children(<object>)` |
+| `moo_poll` | drain pending observations (no MOO command) |
 
 Gated behind `--allow-write`:
 
@@ -70,6 +71,19 @@ Gated behind `--allow-write`:
 |---|---|
 | `moo_eval` | `; <expression>` |
 | `moo_raw` | arbitrary single-line command |
+
+## Observations
+
+A background reader task pulls every line from the socket. Lines that arrive
+between commands (room chatter, pages, `@notify`s, paged-in events) are
+collected into an observations queue capped at the most-recent **1000 lines**.
+
+Every tool response automatically appends a `--- since last call ---` block
+when the queue is non-empty. `moo_poll` returns the same block without
+sending any MOO command — useful for "anything new?" checks.
+
+When the cap is exceeded, oldest lines are dropped and the count is reported
+in the header (`[N earlier line(s) dropped — buffer cap reached]`).
 
 ## How framing works
 
