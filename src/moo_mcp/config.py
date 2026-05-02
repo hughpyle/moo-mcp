@@ -18,7 +18,6 @@ class Config:
     port: int
     user: str
     password: str
-    character: str | None = None
     connect_command: str | None = None
     connect_timeout: float = 10.0
     command_timeout: float = 15.0
@@ -39,9 +38,8 @@ class Config:
             port=int(moo["port"]),
             user=moo["user"],
             password=moo["password"],
-            character=moo.get("character"),
             connect_command=moo.get("connect_command"),
             connect_timeout=float(moo.get("connect_timeout", 10.0)),
             command_timeout=float(moo.get("command_timeout", 15.0)),
-            allow_write=bool(moo.get("allow_write", False)),
+            allow_write=bool(moo.get("allow-write", False)),
         )

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import dataclasses
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -19,6 +20,9 @@ logger = logging.getLogger("moo_mcp")
 
 
 OBSERVATION_HEADER = "--- since last call ---"
+OBJECT_REF_RE = re.compile(r"^(?:#-?\d+|\$[A-Za-z_][A-Za-z0-9_]*|me|here|player)$")
+IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+VERB_RE = re.compile(r"^[A-Za-z0-9_@?*!+\-/<>=]+$")
 
 
 SUMMARY_EXPR = (
@@ -59,6 +63,37 @@ def _format_observations(obs: Observations) -> str:
         parts.append(f"[{obs.dropped} earlier line(s) dropped — buffer cap reached]")
     parts.extend(obs.lines)
     return "\n".join(parts)
+
+
+def _string_arg(args: dict, key: str) -> str:
+    value = args.get(key)
+    if not isinstance(value, str) or not value:
+        raise MOOError(f"{key} must be a non-empty string")
+    return value
+
+
+def _object_ref(args: dict, key: str = "object") -> str:
+    value = _string_arg(args, key)
+    if not OBJECT_REF_RE.fullmatch(value):
+        raise MOOError(
+            f"{key} must be a simple MOO object reference "
+            "(#123, #-1, $thing, me, here, or player)"
+        )
+    return value
+
+
+def _property_name(args: dict, key: str = "property") -> str:
+    value = _string_arg(args, key)
+    if not IDENT_RE.fullmatch(value):
+        raise MOOError(f"{key} must be a simple MOO property identifier")
+    return value
+
+
+def _verb_name(args: dict, key: str = "verb") -> str:
+    value = _string_arg(args, key)
+    if not VERB_RE.fullmatch(value):
+        raise MOOError(f"{key} must be a single MOO verb token")
+    return value
 
 
 READ_TOOLS: list[Tool] = [
@@ -240,11 +275,15 @@ def build_server(config: Config) -> Server:
 
     @server.call_tool()
     async def _call_tool(name: str, arguments: dict) -> list[TextContent]:
-        if name == "moo_poll":
-            await client.ensure_connected()
-            obs_text = _format_observations(client.drain_observations())
-            return [TextContent(type="text", text=obs_text or "(no pending observations)")]
         try:
+            if name == "moo_poll":
+                await client.ensure_connected()
+                obs_text = _format_observations(client.drain_observations())
+                return [
+                    TextContent(
+                        type="text", text=obs_text or "(no pending observations)"
+                    )
+                ]
             text = await _dispatch(client, config, name, arguments)
         except MOOError as exc:
             return [TextContent(type="text", text=f"error: {exc}")]
@@ -267,25 +306,37 @@ async def _dispatch(
     args: dict,
 ) -> str:
     if name == "moo_summary":
-        expr = SUMMARY_EXPR.format(obj=args["object"])
+        obj = _object_ref(args)
+        expr = SUMMARY_EXPR.format(obj=obj)
         out = await client.run(f"; {expr}")
         return _strip_trailing_echo(out)
     if name == "moo_show":
-        return await client.run(f"@show {args['object']}")
+        obj = _object_ref(args)
+        return await client.run(f"@show {obj}")
     if name == "moo_list_verb":
-        return await client.run(f"@list {args['object']}:{args['verb']} with numbers")
+        obj = _object_ref(args)
+        verb = _verb_name(args)
+        return await client.run(f"@list {obj}:{verb} with numbers")
     if name == "moo_verbs":
-        return await client.run(f"@verbs {args['object']}")
+        obj = _object_ref(args)
+        return await client.run(f"@verbs {obj}")
     if name == "moo_props":
-        return await client.run(f"@properties {args['object']}")
+        obj = _object_ref(args)
+        return await client.run(f"@properties {obj}")
     if name == "moo_get_property":
-        return await client.run(f"; {args['object']}.{args['property']}")
+        obj = _object_ref(args)
+        prop = _property_name(args)
+        return await client.run(f"; {obj}.{prop}")
     if name == "moo_parent":
-        return await client.run(f"; parent({args['object']})")
+        obj = _object_ref(args)
+        return await client.run(f"; parent({obj})")
     if name == "moo_children":
-        return await client.run(f"; children({args['object']})")
+        obj = _object_ref(args)
+        return await client.run(f"; children({obj})")
     if name == "moo_verb_info":
-        return await client.run(f"@verb {args['object']}:{args['verb']}")
+        obj = _object_ref(args)
+        verb = _verb_name(args)
+        return await client.run(f"@verb {obj}:{verb}")
 
     if not config.allow_write:
         raise MOOError(f"tool {name!r} requires --allow-write")

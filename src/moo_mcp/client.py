@@ -88,8 +88,13 @@ class MOOClient:
         async with self._connect_lock:
             if self._connected:
                 return
-            await self._connect()
-            self._connected = True
+            try:
+                await self._connect()
+            except Exception:
+                await self._drop_connection()
+                raise
+            else:
+                self._connected = True
 
     async def _connect(self) -> None:
         cfg = self.config
@@ -126,10 +131,17 @@ class MOOClient:
         try:
             pre = await asyncio.wait_for(future, timeout=cfg.connect_timeout)
         except asyncio.TimeoutError as exc:
+            pre = "".join(self._command_buffer)
             self._abort_command()
+            for bad in LOGIN_FAILURE_MARKERS:
+                if bad in pre.lower():
+                    raise MOOError(f"login failed: {pre.strip()[:400]}") from exc
+            detail = pre.strip()[:400]
+            suffix = f"; last output: {detail}" if detail else ""
             raise MOOError(
                 "login: sentinel not seen — check credentials, host/port, "
-                "and that the character has the programmer bit"
+                "and that the user has the programmer bit"
+                f"{suffix}"
             ) from exc
 
         lower = pre.lower()
@@ -224,6 +236,24 @@ class MOOClient:
         self._command_future = None
         self._expect_echo = 0
 
+    async def _drop_connection(self) -> None:
+        self._connected = False
+        self._abort_command()
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._reader_task = None
+        if self.writer is not None:
+            try:
+                self.writer.close()
+            except Exception:
+                pass
+        self.reader = None
+        self.writer = None
+
     def _send(self, line: str) -> None:
         assert self.writer is not None
         self.writer.write(line + "\n")
@@ -231,19 +261,12 @@ class MOOClient:
     async def run(self, command: str) -> str:
         if "\n" in command or "\r" in command:
             raise MOOError("command must not contain newlines")
-        await self.ensure_connected()
         async with self._cmd_lock:
             try:
+                await self.ensure_connected()
                 return await self._run_locked(command)
             except MOOError:
-                self._connected = False
-                if self._reader_task is not None:
-                    self._reader_task.cancel()
-                if self.writer is not None:
-                    try:
-                        self.writer.close()
-                    except Exception:
-                        pass
+                await self._drop_connection()
                 raise
 
     async def _run_locked(self, command: str) -> str:
@@ -272,21 +295,10 @@ class MOOClient:
         return Observations(lines=lines, dropped=dropped)
 
     async def close(self) -> None:
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            try:
-                await self._reader_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._reader_task = None
         if self.writer is not None:
             try:
                 self._send("@quit")
                 await self.writer.drain()
             except Exception:
                 pass
-            try:
-                self.writer.close()
-            except Exception:
-                pass
-        self._connected = False
+        await self._drop_connection()

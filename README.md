@@ -21,7 +21,7 @@ pip install .
 ## Configure
 
 Copy `config.example.toml` to `~/.config/moo-mcp/config.toml` and fill in your
-host, port, character, and password. Or set `MOO_MCP_CONFIG=/path/to/file`.
+host, port, user, and password. Or set `MOO_MCP_CONFIG=/path/to/file`.
 
 ```toml
 [moo]
@@ -29,6 +29,7 @@ host = "lambda.moo.mud.org"
 port = 8888
 user = "YourCharacter"
 password = "your-password"
+allow-write = false
 ```
 
 ## Run
@@ -65,6 +66,10 @@ Read-only:
 | `moo_parent` | `; parent(<object>)` |
 | `moo_children` | `; children(<object>)` |
 | `moo_poll` | drain pending observations (no MOO command) |
+
+Read-only tools only accept simple object references (`#123`, `$thing`, `me`,
+`here`, `player`) and simple property/verb tokens. Use `moo_eval` with
+`--allow-write` for more complex expressions.
 
 Gated behind `--allow-write`:
 
