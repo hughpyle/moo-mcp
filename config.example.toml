@@ -1,0 +1,20 @@
+# Copy to ~/.config/moo-mcp/config.toml and fill in.
+# Or point MOO_MCP_CONFIG=/path/to/config.toml.
+
+[moo]
+host = "lambda.moo.mud.org"
+port = 8888
+user = "YourCharacter"
+password = "your-password"
+
+# Optional. If your "connect" verb takes a different form than
+#   connect <user> <password>
+# put the literal line to send here. {user} and {password} are substituted.
+# connect_command = "connect {user} {password}"
+
+# Seconds to wait for login banner / each command.
+connect_timeout = 10.0
+command_timeout = 15.0
+
+# Set to true to enable mutating tools (eval, raw). Default is read-only.
+allow_write = false

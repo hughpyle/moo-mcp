@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moo-mcp"
+version = "0.1.0"
+description = "stdio MCP server for exploring a LambdaMOO database over telnet"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Hugh Pyle" }]
+dependencies = [
+    "mcp>=1.2.0",
+    "telnetlib3>=2.0.4",
+]
+
+[project.scripts]
+moo-mcp = "moo_mcp.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/hughpyle/moo-mcp"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/moo_mcp"]
