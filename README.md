@@ -55,7 +55,8 @@ Read-only:
 
 | Tool | MOO command |
 |---|---|
-| `moo_show` | `@show <object>` |
+| `moo_summary` | lean introspection: name/parent/location/owner/flags + verb & property *names* (no values). Prefer this over `moo_show` for routine exploration. |
+| `moo_show` | `@show <object>` (full property dump — can be huge) |
 | `moo_verbs` | `@verbs <object>` |
 | `moo_props` | `@properties <object>` |
 | `moo_verb_info` | `@verb <object>:<verb>` |

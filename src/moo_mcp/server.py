@@ -11,7 +11,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from .client import MOOClient, MOOError, Observations
+from .client import MOOClient, MOOError, Observations, _is_eval_echo
 from .config import Config
 
 
@@ -19,6 +19,36 @@ logger = logging.getLogger("moo_mcp")
 
 
 OBSERVATION_HEADER = "--- since last call ---"
+
+
+SUMMARY_EXPR = (
+    "o={obj};"
+    ' n=`o.name ! E_PERM => "?"`;'
+    " l=`o.location ! E_PERM => #-1`;"
+    " w=`o.owner ! E_PERM => #-1`;"
+    ' notify(player, tostr(o)+" name="+toliteral(n));'
+    ' notify(player, "parent: "+tostr(parent(o)));'
+    ' notify(player, "location: "+tostr(l));'
+    ' notify(player, "owner: "+tostr(w));'
+    ' notify(player, "flags: r="+tostr(o.r)+" w="+tostr(o.w)+'
+    '" f="+tostr(o.f)+" player="+tostr(is_player(o)));'
+    ' notify(player,'
+    ' "verbs("+tostr(length(verbs(o)))+"): "+toliteral(verbs(o)));'
+    ' notify(player,'
+    ' "properties("+tostr(length(properties(o)))+"): "+toliteral(properties(o)))'
+)
+
+
+def _strip_trailing_echo(out: str) -> str:
+    """Drop the `=> <value>` and `[used N ticks, ...]` lines that follow our
+    multi-notify summary eval. They're inside the captured command output
+    (not after the framing sentinel), so the reader's echo filter doesn't
+    catch them.
+    """
+    lines = out.splitlines()
+    while lines and _is_eval_echo(lines[-1]):
+        lines.pop()
+    return "\n".join(lines)
 
 
 def _format_observations(obs: Observations) -> str:
@@ -32,6 +62,21 @@ def _format_observations(obs: Observations) -> str:
 
 
 READ_TOOLS: list[Tool] = [
+    Tool(
+        name="moo_summary",
+        description=(
+            "Lean introspection of an object: name, parent, location, owner, "
+            "flags, verb names, and property names (no values). Use this "
+            "first; reach for moo_show only when you need full property "
+            "values. object: `#123`, `$thing`, `me`, `here`, etc."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"object": {"type": "string"}},
+            "required": ["object"],
+            "additionalProperties": False,
+        },
+    ),
     Tool(
         name="moo_show",
         description=(
@@ -221,6 +266,10 @@ async def _dispatch(
     name: str,
     args: dict,
 ) -> str:
+    if name == "moo_summary":
+        expr = SUMMARY_EXPR.format(obj=args["object"])
+        out = await client.run(f"; {expr}")
+        return _strip_trailing_echo(out)
     if name == "moo_show":
         return await client.run(f"@show {args['object']}")
     if name == "moo_list_verb":
