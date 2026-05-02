@@ -31,6 +31,17 @@ LOGIN_FAILURE_MARKERS = (
 )
 
 
+def _is_eval_echo(line: str) -> bool:
+    """Recognise LambdaMOO's two trailing echo lines after `;<expr>`:
+    the value line (`=> ...`) and the cost summary (`[used N ticks, ...]`).
+    """
+    if line.startswith("=> "):
+        return True
+    if line.startswith("[used ") and line.endswith("]"):
+        return True
+    return False
+
+
 @dataclass
 class Observations:
     lines: list[str]
@@ -69,7 +80,7 @@ class MOOClient:
         self._command_sentinel: str | None = None
         self._command_buffer: list[str] = []
         self._command_future: asyncio.Future[str] | None = None
-        self._expect_echo = False
+        self._expect_echo = 0
 
     async def ensure_connected(self) -> None:
         if self._connected:
@@ -161,7 +172,10 @@ class MOOClient:
             full = "".join(self._command_buffer)
             self._command_buffer.clear()
             self._command_sentinel = None
-            self._expect_echo = True
+            # LambdaMOO eval prints two trailing lines we want to swallow:
+            #   => <value>
+            #   [used N ticks, M seconds.]
+            self._expect_echo = 2
             future = self._command_future
             self._command_future = None
             if future is not None and not future.done():
@@ -170,11 +184,12 @@ class MOOClient:
         if self._command_sentinel is not None:
             self._command_buffer.append(line + "\n")
             return
-        if self._expect_echo:
-            self._expect_echo = False
-            if line.startswith("=> "):
+        if self._expect_echo > 0:
+            if _is_eval_echo(line):
+                self._expect_echo -= 1
                 return
-            # Not the echo we were expecting; treat as observation.
+            # Not an echo line; stop expecting and treat as observation.
+            self._expect_echo = 0
         self._add_observation(line)
 
     def _add_observation(self, line: str) -> None:
@@ -190,7 +205,7 @@ class MOOClient:
         self._command_future = None
         self._command_sentinel = None
         self._command_buffer.clear()
-        self._expect_echo = False
+        self._expect_echo = 0
 
     def _begin_command(self, sentinel: str) -> asyncio.Future[str]:
         loop = asyncio.get_event_loop()
@@ -198,7 +213,7 @@ class MOOClient:
         self._command_buffer.clear()
         self._command_sentinel = sentinel
         self._command_future = future
-        self._expect_echo = False
+        self._expect_echo = 0
         return future
 
     def _abort_command(self) -> None:
@@ -207,7 +222,7 @@ class MOOClient:
         if self._command_future is not None and not self._command_future.done():
             self._command_future.cancel()
         self._command_future = None
-        self._expect_echo = False
+        self._expect_echo = 0
 
     def _send(self, line: str) -> None:
         assert self.writer is not None
