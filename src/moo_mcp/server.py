@@ -25,21 +25,22 @@ IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 VERB_RE = re.compile(r"^[A-Za-z0-9_@?*!+\-/<>=]+$")
 
 
+# A single MOO list expression — each element is a notify() call that fires
+# its side-effect (one output line) during list construction. We can't use a
+# multi-statement body because the `;` eval shortcut wraps as `return <body>`
+# which short-circuits at the first statement. The list value is `{1, 1, ...}`,
+# stripped by _strip_trailing_echo along with the cost-summary line.
 SUMMARY_EXPR = (
-    "o={obj};"
-    ' n=`o.name ! E_PERM => "?"`;'
-    " l=`o.location ! E_PERM => #-1`;"
-    " w=`o.owner ! E_PERM => #-1`;"
-    ' notify(player, tostr(o)+" name="+toliteral(n));'
-    ' notify(player, "parent: "+tostr(parent(o)));'
-    ' notify(player, "location: "+tostr(l));'
-    ' notify(player, "owner: "+tostr(w));'
-    ' notify(player, "flags: r="+tostr(o.r)+" w="+tostr(o.w)+'
-    '" f="+tostr(o.f)+" player="+tostr(is_player(o)));'
-    ' notify(player,'
-    ' "verbs("+tostr(length(verbs(o)))+"): "+toliteral(verbs(o)));'
-    ' notify(player,'
-    ' "properties("+tostr(length(properties(o)))+"): "+toliteral(properties(o)))'
+    '{{notify(player, tostr({obj}) + " name=" + toliteral(`{obj}.name ! ANY => "?"\')),'
+    ' notify(player, "parent: " + tostr(parent({obj}))),'
+    ' notify(player, "location: " + tostr(`{obj}.location ! ANY => #-1\')),'
+    ' notify(player, "owner: " + tostr(`{obj}.owner ! ANY => #-1\')),'
+    ' notify(player, "flags: r=" + tostr({obj}.r) + " w=" + tostr({obj}.w)'
+    ' + " f=" + tostr({obj}.f) + " player=" + tostr(is_player({obj}))),'
+    ' notify(player, "verbs(" + tostr(length(verbs({obj}))) + "): "'
+    ' + toliteral(verbs({obj}))),'
+    ' notify(player, "properties(" + tostr(length(properties({obj}))) + "): "'
+    ' + toliteral(properties({obj})))}}'
 )
 
 
