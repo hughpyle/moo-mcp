@@ -228,6 +228,20 @@ READ_TOOLS: list[Tool] = [
             "additionalProperties": False,
         },
     ),
+    Tool(
+        name="moo_disconnect",
+        description=(
+            "Cleanly close the MOO connection without quitting the MCP "
+            "server. Sends @quit, drops the socket, and clears observations. "
+            "The next tool call will reconnect (login banner will reappear "
+            "as observations). No-op if already disconnected."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    ),
 ]
 
 
@@ -285,6 +299,10 @@ def build_server(config: Config) -> Server:
                         type="text", text=obs_text or "(no pending observations)"
                     )
                 ]
+            if name == "moo_disconnect":
+                await client.close()
+                client.drain_observations()
+                return [TextContent(type="text", text="disconnected")]
             text = await _dispatch(client, config, name, arguments)
         except MOOError as exc:
             return [TextContent(type="text", text=f"error: {exc}")]
