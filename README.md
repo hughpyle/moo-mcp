@@ -1,7 +1,7 @@
 # moo-mcp
 
-A small stdio MCP server that lets Claude Code (or any MCP client) explore a
-LambdaMOO database over telnet.
+A small stdio MCP server that lets Claude Code (or any MCP client) explore
+LambdaMOO (or similar MOOs) over telnet.
 
 Read-only by default: `@show`, `@verbs`, `@properties`, `@list`, `@verb`,
 `parent()`, `children()`, and direct property reads. Mutating tools (`;eval`,
